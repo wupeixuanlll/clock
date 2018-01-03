@@ -21,7 +21,58 @@
 #define HOST_PORT   (80)
 String apiKey="pUpCi73WZHE2uyeAliyrPIRGL=Q=";
 char buf[10];
+/*==============================================================================*/
+/* Useful Constants */
+#define SECS_PER_HOUR (3600UL)
+#define INTERVAL_LCD             20             //定义OLED刷新时间间隔  
+unsigned long lcd_time = millis();                 //OLED刷新时间计时器
+U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_NONE);     //设置OLED型号  
+//-------字体设置，大、中、小
+#define setFont_L u8g.setFont(u8g_font_7x13)
+#define setFont_M u8g.setFont(u8g_font_fixed_v0r)
+#define setFont_S u8g.setFont(u8g_font_fixed_v0r)
+#define setFont_SS u8g.setFont(u8g_font_fub25n)
+long previousMillis = 0;        // 存储LED最后一次的更新
+long interval = 5000;           // 闪烁的时间间隔（毫秒）
+unsigned long currentMillis=0;
+void TemRead();
 
+#ifdef ESP32
+#error "This code is not recommended to run on the ESP32 platform! Please check your Tools->Board setting."
+#endif
+
+/**
+**CoreUSB UART Port: [Serial1] [D0,D1]
+**Core+ UART Port: [Serial1] [D2,D3]
+**/
+#if defined(__AVR_ATmega32U4__) || defined(__AVR_ATmega1284P__) || defined (__AVR_ATmega644P__) || defined(__AVR_ATmega128RFA1__)
+#define EspSerial Serial1
+#define UARTSPEED  115200
+#endif
+
+/**
+**Core UART Port: [SoftSerial] [D2,D3]
+**/
+#if defined (__AVR_ATmega168__) || defined (__AVR_ATmega328__) || defined (__AVR_ATmega328P__)
+#include <SoftwareSerial.h>
+SoftwareSerial mySerial(2, 3); /* RX:D2, TX:D3 */
+
+#define EspSerial mySerial
+#define UARTSPEED  9600
+#endif
+
+#define SSID        "111"
+#define PASSWORD    "11111111"
+
+ESP8266 wifi(&EspSerial);
+
+#include <TimeLib.h>
+
+uint8_t buffer[128] = {0};
+static uint8_t upd_id = 0;
+uint32_t len = 0;
+int Year, Month, Day, Hour, Minute, Second, Weekday;
+time_t prevDisplay = 0;
 
 
 #define INTERVAL_sensor 2000
@@ -49,7 +100,100 @@ unsigned long sensor_time = millis();                        //传感器采样�
 //int SensorData;                                   //用于存储传感器数据
 String postString;                                //用于存储发送数据的字符串
 //String jsonToSend;                                //用于存储发送的json格式参数
+void updateTimeData() {
+  do {
+    delay(200);
+    registerUDPAndSendRecvData();
+    if (len > 0) {
+      getTimeStampAndSetRTC();
+      unregisterUDP();
+    } else {
+      unregisterUDP();
+    }
+  } while (!len);
+}
+int a;
+void getTimeStampAndSetRTC() {
+  Serial.print("Received:[");
+  unsigned long t = (((unsigned long)buffer[40] << 24) |
+                     ((unsigned long)buffer[41] << 16) |
+                     ((unsigned long)buffer[42] <<  8) |
+                     (unsigned long)buffer[43]) - 2208988800UL;
 
+  Serial.print("Unix timestamp:");
+  Serial.print(t);
+  Serial.print("]\r\n");
+
+  setTime(t);
+  adjustTime(TIME_ZONE * SECS_PER_HOUR);
+}
+
+void registerUDPAndSendRecvData() {
+  if (wifi.registerUDP(upd_id, HOST_NAME, HOST_PORT)) {
+    Serial.print("register udp ");
+    Serial.print(upd_id);
+    Serial.println(" ok");
+  } else {
+    Serial.print("register udp ");
+    Serial.print(upd_id);
+    Serial.println(" err");
+  }
+
+  static const char PROGMEM
+  timeReqA[] = { 227,  0,  6, 236 }, timeReqB[] = {  49, 78, 49,  52 };
+  // Assemble and issue request packet
+  uint8_t       buf[48];
+  memset(buf, 0, sizeof(buf));
+  memcpy_P( buf    , timeReqA, sizeof(timeReqA));
+  memcpy_P(&buf[12], timeReqB, sizeof(timeReqB));
+
+  wifi.send(upd_id, (const uint8_t*)buf, 48);
+  //uint32_t len = wifi.recv(upd_id, buffer, sizeof(buffer), 10000);
+  len = wifi.recv(upd_id, buffer, sizeof(buffer), 10000);
+}
+void unregisterUDP() {
+  if (wifi.unregisterUDP(upd_id)) {
+    Serial.print("unregister udp ");
+    Serial.print(upd_id);
+    Serial.println(" ok");
+  } else {
+    Serial.print("unregister udp ");
+    Serial.print(upd_id);
+    Serial.println(" err");
+  }
+}
+
+//*****串口打印日期时间*****
+void serialClockDisplay(int _year, int _month, int _day, int _hour, int _minute, int _second) { 
+  Year=_year, Month= _month, Day=_day, Hour=_hour, Minute=_minute, Second=_second;
+  if (_year < 1000) {
+    Serial.print("20");
+  }
+  Serial.print(_year, DEC);
+  Serial.print('/');
+  if (_month < 10) {
+    Serial.print("0");
+  }
+  Serial.print(_month, DEC);
+  Serial.print('/');
+  if (_day < 10) {
+    Serial.print("0");
+  }
+  Serial.print(_day, DEC);
+  Serial.print("   ");
+  Serial.print(_hour, DEC);
+  Serial.print(':');
+  if (_minute < 10) {
+    Serial.print("0");
+  }
+  Serial.print(_minute, DEC);
+  Serial.print(':');
+  if (_second < 10) {
+    Serial.print("0");
+  }
+  Serial.println(_second, DEC);
+  Serial.println();
+}
 void setup(void)     //初始化函数  
 {       
   //初始化串口波特率  
@@ -87,12 +231,11 @@ void setup(void)     //初始化函数
 
   Serial.print("setup end\r\n");
     
-  
+  updateTimeData();
 }
 void loop(void)     //循环函数  
 {   
-  if (sensor_time > millis())  sensor_time = millis();  
-    
+
   if(millis() - sensor_time > INTERVAL_SENSOR)              //传感器采样时间间隔  
   {  
     getSensorData();                                        //读串口中的传感器数据
@@ -106,7 +249,53 @@ void loop(void)     //循环函数
   {                
     updateSensorData();                                     //将数据上传到服务器的函数
     net_time1 = millis();
-  }
+  }u8g.firstPage();
+     do{
+      
+   light= analogRead(Light_PIN); 
+     setFont_L;
+     u8g.setPrintPos(0, 10);
+     u8g.print(Year,DEC);
+     u8g.print("y ");
+     u8g.setPrintPos(65, 10);
+     u8g.print(Month,DEC);
+     u8g.print("m");
+     u8g.setPrintPos(0, 25);
+     u8g.print(Hour,DEC);
+        u8g.print("h");
+        u8g.setPrintPos(65, 25);
+     u8g.print(Minute,DEC);
+        u8g.print("m");
+        u8g.setPrintPos(0, 40);
+     u8g.print(Second,DEC);
+     u8g.print("s");
+     
+u8g.setPrintPos(65, 40);
+     u8g.print(light,DEC);
+     u8g.print("lux");
+     
+     u8g.setPrintPos(0, 55);
+     u8g.print(termo.getTemperature());
+     u8g.print("c");
+     
+u8g.setPrintPos(65, 55);
+ u8g.print(termo.getHumidity());//打印湿度
+ u8g.print("hpa");
+   if (sensor_time > millis())  sensor_time = millis();  
+  if (now() != prevDisplay) {
+    prevDisplay = now();
+    serialClockDisplay(year(), month(), day(), hour(), minute(), second());
+    }
+    if( Hour==23)
+       {
+    
+        tone(buzzer_pin,500);    //在端口输出频率
+    delay(5);      //该频率维持5毫秒   
+    noTone(buzzer_pin);
+}
+
+   
+  } while( u8g.nextPage() );
   
 }
 
